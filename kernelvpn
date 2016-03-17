@@ -1,0 +1,55 @@
+#!/bin/bash
+
+#Created by Alex.
+#shall be placed under /usr/bin with right permissions
+if [ "$1" = "l2tp_create" ]; then
+  if [ "$2" = "server"]; then
+    iptables -t nat -A INPUT -i $SERVER_IF -p udp --dport 5353 -m u32 --u32 '0>>22&0x3C@12 = 0xdeadbeef && 0>>22&0x3C@16 = 0xbaadc0de && 0>>22&0x3C@20 = 0xfaceb00c' -j SNAT --to-source 10.53.0.255:6464
+    ip l2tp add tunnel local $SERVER_IP remote 10.53.0.255 tunnel_id 1 peer_tunnel_id 1 encap udp udp_sport 5353 udp_dport 6464
+    ip l2tp add session tunnel_id 1 session_id $SESSION peer_session_id $SESSION cookie $COOKIE peer_cookie $COOKIE
+    ip addr add 10.53.0.1 peer 10.53.0.2 dev l2tpeth0
+    ip link set l2tpeth0 up mtu 1480
+    iptables -t nat -A POSTROUTING -o $SERVER_IF -s 10.53.0.2 -j MASQUERADE
+    sysctl -w net.ipv4.ip_forward=1
+  elif [ "$2" = "client" ]; then
+    ip l2tp add tunnel local $CLIENT_IP remote $SERVER_IP tunnel_id 1 peer_tunnel_id 1 encap udp udp_sport 6464 udp_dport 5353
+    ip l2tp add session tunnel_id 1 session_id $SESSION peer_session_id $SESSION cookie $COOKIE peer_cookie $COOKIE
+    ip addr add 10.53.0.2 peer 10.53.0.1 dev l2tpeth0
+    ip link set l2tpeth0 up mtu 1480
+    ip route add 8.8.8.8 via 10.53.0.1
+  fi
+elif [ "$1" = "ipsec_create" ]; then
+  if [ "$2" = "server" ]; then
+    ip tunnel add ipsec0 mode ipip local 10.53.0.1 remote 10.53.0.2 dev l2tpeth0
+    ip addr add 10.53.1.1 peer 10.53.1.2 dev ipsec0
+    ip link set ipsec0 up
+    ip xfrm state add src 10.53.0.1 dst 10.53.0.2 proto esp spi 102 enc blowfish 0xc0de0102
+    ip xfrm state add src 10.53.0.2 dst 10.53.0.1 proto esp spi 201 enc blowfish 0xc0de0201
+    ip xfrm policy add dev l2tpeth0 dir out tmpl proto esp spi 102
+    ip xfrm policy add dev l2tpeth0 dir in tmpl proto esp spi 201
+    iptables -t nat -A POSTROUTING -o eth1 -s 10.53.1.2 -j MASQUERADE
+  elif [ "$2" = "client" ]; then
+   ip tunnel add ipsec0 mode ipip local 10.53.0.2 remote 10.53.0.1 dev l2tpeth0
+   ip addr add 10.53.1.2 peer 10.53.1.1 dev ipsec0
+   ip link set ipsec0 up
+   ip xfrm state add src 10.53.0.2 dst 10.53.0.1 proto esp spi 201 enc blowfish 0xc0de0201
+   ip xfrm state add src 10.53.0.1 dst 10.53.0.2 proto esp spi 102 enc blowfish 0xc0de0102
+   ip xfrm policy add dev l2tpeth0 dir out tmpl proto esp spi 201
+    ip xfrm policy add dev l2tpeth0 dir in tmpl proto esp spi 102
+   ip route del 8.8.8.8
+   ip route add 8.8.8.8 10.53.1.1
+  fi
+elif [ "$1" = "shutdown_all" ]; then
+  iptables -t nat -D INPUT -i eth1 -p udp --dport 5353 -m u32 --u32 '0>>22&0x3C@12 = 0xdeadbeef && 0>>22&0x3C@16 = 0xbaadc0de && 0>>22&0x3C@20 = 0xfaceb00c' -j SNAT --to-source $DUMMY_IP:6464
+  iptables -t nat -D POSTROUTING -o $SERVER_IF -s 10.53.0.2 -j MASQUERADE
+  #ipsec
+  ip xfrm state del src 10.53.0.1 dst 10.53.0.2 proto esp spi 102
+  ip xfrm state del src 10.53.0.2 dst 10.53.0.1 proto esp spi 201
+  ip xfrm policy del dev l2tpeth0 dir out
+  ip xfrm policy del dev l2tpeth0 dir in
+  iptables -t nat -D POSTROUTING -o $SERVER_IF -s 10.53.1.2 -j MASQUERADE
+  ip tunnel del ipsec0
+  ip l2tp del tunnel tunnel_id 1
+fi
+echo
+echo "KernelIPVPN"
